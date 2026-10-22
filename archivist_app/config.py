@@ -1,78 +1,74 @@
-import pytest
+﻿import ctypes
+import os
+from dataclasses import dataclass
+from pathlib import Path
 
-from archivist_app import config
+from dotenv import load_dotenv
+
 from archivist_app.exceptions import ConfigError
 
-VARS = ("PORTAL_LOGIN_URL", "PORTAL_RECIBIDOS_URL", "PORTAL_RUC", "PORTAL_PASSWORD")
+APP_NAME = "Archivist"
 
-LOGIN = "https://srienlinea.sri.gob.ec/sri-en-linea/contribuyente/perfil"
-RECIBIDOS = (
-    "https://srienlinea.sri.gob.ec/comprobantes-electronicos-internet"
-    "/pages/consultas/recibidos/comprobantesRecibidos.jsf"
-)
+AUTH_DIR = Path(os.getenv("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / APP_NAME / ".auth"
 
-
-@pytest.fixture(autouse=True)
-def entorno_aislado(monkeypatch, tmp_path):
-    # load_dotenv escribe en os.environ: se registra el estado original para restaurarlo.
-    for n in VARS:
-        monkeypatch.setenv(n, "x")
-        monkeypatch.delenv(n)
-    monkeypatch.setattr(config, "OUTPUT_DIR", tmp_path / "salida")
-    monkeypatch.setattr(config, "AUTH_DIR", tmp_path / "auth")
-    monkeypatch.setattr(config, "ENV_FILE", tmp_path / ".env")
+DEFAULT_TIMEOUT_MS = 30_000
+USER_WAIT_TIMEOUT_S = 600  # espera máxima a que el usuario elija el filtro y pulse Consultar
 
 
-def _env(**cambios) -> None:
-    """Escribe un .env válido; cada cambio lo reemplaza, y None quita la variable."""
-    valores = {
-        "PORTAL_LOGIN_URL": LOGIN,
-        "PORTAL_RECIBIDOS_URL": RECIBIDOS,
-        "PORTAL_RUC": "1700000000001",
-        "PORTAL_PASSWORD": "clave",
-    }
-    valores.update(cambios)
-    texto = "".join(f"{k}='{v}'\n" for k, v in valores.items() if v is not None)
-    config.ENV_FILE.write_text(texto, encoding="utf-8-sig")
+def _documents_dir() -> Path:
+    """Carpeta Documentos real del usuario (respeta la redirección a OneDrive)."""
+    buf = ctypes.create_unicode_buffer(260)
+    # 5 = CSIDL_PERSONAL (Documentos)
+    if ctypes.windll.shell32.SHGetFolderPathW(None, 5, None, 0, buf) == 0 and buf.value:
+        return Path(buf.value)
+    return Path.home() / "Documents"
 
 
-def test_sin_archivo():
-    with pytest.raises(ConfigError, match="No existe"):
-        config.load_settings()
+# Pruebas: .env en la raíz del proyecto, junto a .env.example. Instalado: en AppData.
+_PROJECT_ENV = Path(__file__).resolve().parent.parent / ".env"
+_APPDATA_ENV = Path(os.getenv("APPDATA") or Path.home() / "AppData" / "Roaming") / APP_NAME / ".env"
+ENV_FILE = _PROJECT_ENV if _PROJECT_ENV.is_file() else _APPDATA_ENV
+OUTPUT_DIR = _documents_dir() / APP_NAME
 
 
-def test_faltan_variables():
-    _env(PORTAL_RECIBIDOS_URL=None, PORTAL_PASSWORD=None)
-    with pytest.raises(ConfigError, match="PORTAL_RECIBIDOS_URL, PORTAL_PASSWORD"):
-        config.load_settings()
+@dataclass(frozen=True)
+class Settings:
+    login_url: str
+    recibidos_url: str
+    portal_ruc: str  # RUC: es el campo #usuario del login (no hay otro usuario)
+    portal_password: str
+    output_dir: Path
 
 
-def test_carga_con_caracteres_especiales():
-    larga = RECIBIDOS + "?&contextoMPT=https://x/y&linkMPT=%2Fa%2Fb%3F#z"
-    _env(PORTAL_RECIBIDOS_URL=larga, PORTAL_PASSWORD='a#b$c"d')
-    s = config.load_settings()
-    assert s.login_url == LOGIN
-    assert s.recibidos_url == larga
-    assert s.portal_ruc == "1700000000001"
-    assert s.portal_password == 'a#b$c"d'
-    assert s.output_dir == config.OUTPUT_DIR
-    assert config.OUTPUT_DIR.is_dir() and config.AUTH_DIR.is_dir()
+def _check_url(name: str, value: str) -> str:
+    """Una URL mal pegada se detecta aquí, no cuando el portal responde algo raro."""
+    if not value.startswith("https://"):
+        raise ConfigError(f"{name} debe empezar con https:// y es: {value[:60]!r}")
+    if "\ufffd" in value or any(c.isspace() for c in value):
+        raise ConfigError(f"{name} tiene espacios o caracteres dañados; vuelva a pegarla")
+    return value
 
 
-def test_url_sin_https():
-    _env(PORTAL_LOGIN_URL="http://srienlinea.sri.gob.ec/perfil")
-    with pytest.raises(ConfigError, match="PORTAL_LOGIN_URL"):
-        config.load_settings()
-    assert not config.OUTPUT_DIR.exists()  # config inválida: no se crean carpetas
+def load_settings() -> Settings:
+    if not ENV_FILE.is_file():
+        raise ConfigError(f"No existe el archivo de configuración: {ENV_FILE}")
+    load_dotenv(ENV_FILE, encoding="utf-8-sig", interpolate=False)
 
+    required = ("PORTAL_LOGIN_URL", "PORTAL_RECIBIDOS_URL", "PORTAL_RUC", "PORTAL_PASSWORD")
+    missing = [n for n in required if not os.getenv(n)]
+    if missing:
+        raise ConfigError(f"Faltan variables en {ENV_FILE}: {', '.join(missing)}")
 
-def test_url_con_caracter_danado():
-    _env(PORTAL_RECIBIDOS_URL="https://srienlinea.sri.gob.ec/Facturaci\ufffdn")
-    with pytest.raises(ConfigError, match="PORTAL_RECIBIDOS_URL"):
-        config.load_settings()
+    login_url = _check_url("PORTAL_LOGIN_URL", os.environ["PORTAL_LOGIN_URL"])
+    recibidos_url = _check_url("PORTAL_RECIBIDOS_URL", os.environ["PORTAL_RECIBIDOS_URL"])
 
+    for d in (OUTPUT_DIR, AUTH_DIR):
+        d.mkdir(parents=True, exist_ok=True)
 
-def test_url_con_espacio_al_final():
-    _env(PORTAL_RECIBIDOS_URL=RECIBIDOS + " ")
-    with pytest.raises(ConfigError, match="PORTAL_RECIBIDOS_URL"):
-        config.load_settings()
+    return Settings(
+        login_url=login_url,
+        recibidos_url=recibidos_url,
+        portal_ruc=os.environ["PORTAL_RUC"],
+        portal_password=os.environ["PORTAL_PASSWORD"],
+        output_dir=OUTPUT_DIR,
+    )

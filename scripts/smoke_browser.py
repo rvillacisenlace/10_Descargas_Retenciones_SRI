@@ -1,7 +1,8 @@
-from archivist_app.browser import open_context
-from archivist_app.config import LOGIN_URL
+﻿from archivist_app.browser import open_context
+from archivist_app.config import load_settings
 
 ESPERA_MS = 15_000
+SETTINGS = load_settings()
 
 
 def corta(url: str) -> str:
@@ -12,7 +13,7 @@ def corta(url: str) -> str:
 with open_context(headless=False) as ctx:
     page = ctx.pages[0] if ctx.pages else ctx.new_page()
     try:
-        page.goto(LOGIN_URL, wait_until="domcontentloaded")
+        page.goto(SETTINGS.login_url, wait_until="domcontentloaded")
         print("Tras goto   ->", corta(page.url))
         try:
             page.wait_for_selector("#usuario", state="attached", timeout=ESPERA_MS)

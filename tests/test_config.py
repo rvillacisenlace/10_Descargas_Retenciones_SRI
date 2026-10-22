@@ -1,9 +1,15 @@
-import pytest
+﻿import pytest
 
 from archivist_app import config
 from archivist_app.exceptions import ConfigError
 
-VARS = ("PORTAL_USER", "PORTAL_PASSWORD")
+VARS = ("PORTAL_LOGIN_URL", "PORTAL_RECIBIDOS_URL", "PORTAL_RUC", "PORTAL_PASSWORD")
+
+LOGIN = "https://srienlinea.sri.gob.ec/sri-en-linea/contribuyente/perfil"
+RECIBIDOS = (
+    "https://srienlinea.sri.gob.ec/comprobantes-electronicos-internet"
+    "/pages/consultas/recibidos/comprobantesRecibidos.jsf"
+)
 
 
 @pytest.fixture(autouse=True)
@@ -17,7 +23,16 @@ def entorno_aislado(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "ENV_FILE", tmp_path / ".env")
 
 
-def _env(texto: str) -> None:
+def _env(**cambios) -> None:
+    """Escribe un .env válido; cada cambio lo reemplaza, y None quita la variable."""
+    valores = {
+        "PORTAL_LOGIN_URL": LOGIN,
+        "PORTAL_RECIBIDOS_URL": RECIBIDOS,
+        "PORTAL_RUC": "1700000000001",
+        "PORTAL_PASSWORD": "clave",
+    }
+    valores.update(cambios)
+    texto = "".join(f"{k}='{v}'\n" for k, v in valores.items() if v is not None)
     config.ENV_FILE.write_text(texto, encoding="utf-8-sig")
 
 
@@ -27,15 +42,37 @@ def test_sin_archivo():
 
 
 def test_faltan_variables():
-    _env("PORTAL_USER='1700000000001'\n")
-    with pytest.raises(ConfigError, match="PORTAL_PASSWORD"):
+    _env(PORTAL_RECIBIDOS_URL=None, PORTAL_PASSWORD=None)
+    with pytest.raises(ConfigError, match="PORTAL_RECIBIDOS_URL, PORTAL_PASSWORD"):
         config.load_settings()
 
 
 def test_carga_con_caracteres_especiales():
-    _env("PORTAL_USER='1700000000001'\nPORTAL_PASSWORD='a#b$c\"d'\n")
+    larga = RECIBIDOS + "?&contextoMPT=https://x/y&linkMPT=%2Fa%2Fb%3F#z"
+    _env(PORTAL_RECIBIDOS_URL=larga, PORTAL_PASSWORD='a#b$c"d')
     s = config.load_settings()
-    assert s.portal_user == "1700000000001"
+    assert s.login_url == LOGIN
+    assert s.recibidos_url == larga
+    assert s.portal_ruc == "1700000000001"
     assert s.portal_password == 'a#b$c"d'
     assert s.output_dir == config.OUTPUT_DIR
     assert config.OUTPUT_DIR.is_dir() and config.AUTH_DIR.is_dir()
+
+
+def test_url_sin_https():
+    _env(PORTAL_LOGIN_URL="http://srienlinea.sri.gob.ec/perfil")
+    with pytest.raises(ConfigError, match="PORTAL_LOGIN_URL"):
+        config.load_settings()
+    assert not config.OUTPUT_DIR.exists()  # config inválida: no se crean carpetas
+
+
+def test_url_con_caracter_danado():
+    _env(PORTAL_RECIBIDOS_URL="https://srienlinea.sri.gob.ec/Facturaci\ufffdn")
+    with pytest.raises(ConfigError, match="PORTAL_RECIBIDOS_URL"):
+        config.load_settings()
+
+
+def test_url_con_espacio_al_final():
+    _env(PORTAL_RECIBIDOS_URL=RECIBIDOS + " ")
+    with pytest.raises(ConfigError, match="PORTAL_RECIBIDOS_URL"):
+        config.load_settings()
