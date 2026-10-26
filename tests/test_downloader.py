@@ -78,9 +78,9 @@ def archivos(base: Path) -> list[Path]:
     return [p for p in base.rglob("*") if p.is_file()]
 
 
-def staging_vacio(base: Path) -> bool:
-    raiz = base / ".staging"
-    return not raiz.exists() or not any(raiz.iterdir())
+def sin_staging(base: Path) -> bool:
+    """La carpeta .staging es temporal: no debe quedar ni vacía."""
+    return not (base / ".staging").exists()
 
 
 # --- validar_contenido -------------------------------------------------------------------
@@ -114,7 +114,7 @@ def test_lote_ok_guarda_en_las_rutas_del_organizer_y_limpia_staging(tmp_path):
     for f in filas:
         for ext, contenido in (("xml", xml(f)), ("pdf", pdf(f))):
             assert ruta_destino(tmp_path, f.comprobante, ext).read_bytes() == contenido
-    assert len(archivos(tmp_path)) == 6 and staging_vacio(tmp_path)
+    assert len(archivos(tmp_path)) == 6 and sin_staging(tmp_path)
     assert pausas == [0.5] * 5  # entre las 6 peticiones, ninguna pausa antes de la primera
 
 
@@ -144,7 +144,7 @@ def test_fallo_a_mitad_no_deja_nada_guardado(tmp_path, cambio, texto):
     with pytest.raises(IncompleteBatchError, match=texto) as e:
         bajador(page, tmp_path).descargar_lote(filas)
     assert "petición 3 de 6" in str(e.value) and "fila 2" in str(e.value)
-    assert archivos(tmp_path) == [] and staging_vacio(tmp_path)
+    assert archivos(tmp_path) == [] and sin_staging(tmp_path)
     assert len(page.pedidos) == 3  # se aborta: no se sigue pidiendo al portal
 
 
@@ -161,7 +161,7 @@ def test_error_de_playwright_se_envuelve_sin_datos(tmp_path):
     with pytest.raises(IncompleteBatchError, match="RuntimeError") as e:
         bajador(FakePage(filas, falla_en=2), tmp_path).descargar_lote(filas)
     assert "Target closed" not in str(e.value)
-    assert archivos(tmp_path) == [] and staging_vacio(tmp_path)
+    assert archivos(tmp_path) == [] and sin_staging(tmp_path)
 
 
 def test_los_mensajes_no_llevan_la_clave(tmp_path):
@@ -191,7 +191,7 @@ def test_conflicto_con_archivo_distinto_aborta_y_no_toca_nada(tmp_path):
     with pytest.raises(IncompleteBatchError, match="archivo distinto"):
         bajador(FakePage(filas), tmp_path).descargar_lote(filas)
     assert archivos(tmp_path) == [ya] and ya.read_bytes() == b"<otro/>"
-    assert staging_vacio(tmp_path)
+    assert sin_staging(tmp_path)
 
 
 def test_ruta_demasiado_larga_se_detecta_antes_de_pedir(tmp_path):
@@ -215,4 +215,40 @@ def test_si_falla_el_movimiento_se_revierte_lo_movido(tmp_path, monkeypatch):
     monkeypatch.setattr(dl.os, "replace", replace_que_falla)
     with pytest.raises(IncompleteBatchError, match="PermissionError.*revirtió"):
         bajador(FakePage(filas), tmp_path).descargar_lote(filas)
-    assert archivos(tmp_path) == [] and staging_vacio(tmp_path)
+    assert archivos(tmp_path) == [] and sin_staging(tmp_path)
+
+# --- la carpeta .staging es temporal -------------------------------------------------------------
+
+def test_un_lote_exitoso_no_deja_ni_la_carpeta_staging(tmp_path):
+    filas = [fila(1, 101)]
+    bajador(FakePage(filas), tmp_path).descargar_lote(filas)
+    assert not (tmp_path / ".staging").exists()
+
+
+def test_un_lote_fallido_tampoco_deja_la_carpeta_staging(tmp_path):
+    filas = [fila(1, 101)]
+    page = FakePage(filas, cambios={filas[0].id_pdf: {"status": 500, "datos": b"x"}})
+    with pytest.raises(IncompleteBatchError):
+        bajador(page, tmp_path).descargar_lote(filas)
+    assert not (tmp_path / ".staging").exists()
+
+
+def test_los_restos_de_otra_corrida_en_staging_no_se_borran(tmp_path):
+    resto = tmp_path / ".staging" / "lote_antiguo"
+    resto.mkdir(parents=True)
+    (resto / "000001.pdf").write_bytes(b"%PDF dato de una corrida interrumpida")
+    filas = [fila(1, 101)]
+    bajador(FakePage(filas), tmp_path).descargar_lote(filas)
+    assert (resto / "000001.pdf").read_bytes() == b"%PDF dato de una corrida interrumpida"
+    assert [p.name for p in (tmp_path / ".staging").iterdir()] == ["lote_antiguo"]  # solo queda lo ajeno
+
+
+def test_si_no_se_puede_crear_la_carpeta_temporal_no_queda_staging(tmp_path, monkeypatch):
+    def falla(*args, **kwargs):
+        raise PermissionError("denegado")
+
+    monkeypatch.setattr(dl.tempfile, "mkdtemp", falla)
+    filas = [fila(1, 101)]
+    with pytest.raises(IncompleteBatchError, match="carpeta temporal"):
+        bajador(FakePage(filas), tmp_path).descargar_lote(filas)
+    assert not (tmp_path / ".staging").exists()

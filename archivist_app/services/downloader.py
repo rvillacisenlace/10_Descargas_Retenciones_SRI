@@ -52,6 +52,17 @@ JS_DESCARGA = r"""async (linkId) => {
     return {status: r.status, b64: btoa(bin)};
 }"""
 
+def _quitar_staging(staging: Path | None, raiz: Path) -> None:
+    """Borra el lote y la carpeta .staging, que es temporal. rmdir solo borra una carpeta VACÍA: si
+    hay restos de una corrida interrumpida no se toca nada que no sea de este lote."""
+    if staging is not None:
+        shutil.rmtree(staging, ignore_errors=True)
+    try:
+        raiz.rmdir()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        log.warning("La carpeta .staging no se pudo eliminar (no está vacía o está en uso); no se toca")
 
 class Solicitable(Protocol):
     """Lo mínimo que se necesita de una fila del listado (la entrega ComprobantesPage)."""
@@ -111,11 +122,12 @@ class Downloader:
         for f in filas:
             ids[(f.comprobante.clave.valor, "xml")] = f.id_xml
             ids[(f.comprobante.clave.valor, "pdf")] = f.id_pdf
+        raiz = self.base / CARPETA_STAGING
         try:
-            raiz = self.base / CARPETA_STAGING
             raiz.mkdir(parents=True, exist_ok=True)
             staging = Path(tempfile.mkdtemp(prefix="lote_", dir=raiz))
         except OSError as e:
+            _quitar_staging(None, raiz)
             raise IncompleteBatchError(
                 f"No se pudo preparar la carpeta temporal ({type(e).__name__})"
             ) from e
@@ -124,7 +136,7 @@ class Downloader:
             pendientes, omitidos, xml_con_clave, xml_total = self._bajar(destinos, ids, staging)
             self._mover(pendientes)
         finally:
-            shutil.rmtree(staging, ignore_errors=True)
+            _quitar_staging(staging, raiz)
         log.info(
             "Lote descargado: %d escritos, %d omitidos, %d peticiones en %.1f s; xml_con_clave=%d/%d",
             len(pendientes), omitidos, len(destinos), time.monotonic() - inicio,
