@@ -19,7 +19,6 @@ _EDGE_CANDIDATES = (
     Path(os.getenv("PROGRAMFILES", r"C:\Program Files")) / "Microsoft/Edge/Application/msedge.exe",
 )
 
-
 def _find_edge() -> Path:
     for ruta in _EDGE_CANDIDATES:
         if ruta.is_file():
