@@ -6,13 +6,26 @@ from pathlib import Path
 import pytest
 
 from archivist_app.exceptions import IncompleteBatchError
-from archivist_app.models import Comprobante
+from archivist_app.models import Comprobante, digito_verificador
 from archivist_app.services import downloader as dl
 from archivist_app.services.downloader import (
     JS_DESCARGA, Downloader, validar_contenido,
 )
 from archivist_app.services.file_organizer import ruta_destino
-from tests.test_comprobantes_page import fila as fila_dict
+
+RUC = "1790000000001"  # RUC ficticio, solo para pruebas
+
+
+def fila_dict(i: int, sec: int) -> dict:
+    base = f"19102026{'07'}{RUC}1038005{sec:09d}014992741"  # 48 digitos
+    return {
+        "celdas": [
+            str(i), f"{RUC} EMISOR DE PRUEBA S.A.", f"Comprobante de Retención 038-005-{sec:09d}",
+            base + str(digito_verificador(base)), "19/10/2026 10:29:17", "19/10/2026",
+        ],
+        "id_xml": f"frmPrincipal:tablaCompRecibidos:{i - 1}:lnkXml",
+        "id_pdf": f"frmPrincipal:tablaCompRecibidos:{i - 1}:lnkPdf",
+    }
 
 
 @dataclass(frozen=True)
