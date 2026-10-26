@@ -2,7 +2,7 @@
 
 import pytest
 
-from archivist_app.models import Comprobante
+from archivist_app.models import Comprobante, digito_verificador
 from archivist_app.services.file_organizer import (
     Accion,
     carpeta_destino,
@@ -42,10 +42,10 @@ def _factura():
     )
 
 
-def test_el_nombre_es_la_clave_con_la_extension():
-    c = _retencion()
-    assert nombre_archivo(c, "pdf") == f"{CLAVE_RETENCION}.pdf"
-    assert nombre_archivo(c, ".XML") == f"{CLAVE_RETENCION}.xml"
+def test_el_nombre_es_el_numero_y_el_ruc_del_emisor_con_la_extension():
+    c = _retencion()  # número 001-010-000004219, emisor 1700000000001
+    assert nombre_archivo(c, "pdf") == "001-010-000004219_1700000000001.pdf"
+    assert nombre_archivo(c, ".XML") == "001-010-000004219_1700000000001.xml"
 
 
 @pytest.mark.parametrize("ext", ["exe", "", "pdf.exe", "../pdf"])
@@ -70,7 +70,7 @@ def test_tipo_desconocido_usa_una_carpeta_con_su_codigo():
 
 def test_ruta_completa():
     base = Path("salida")
-    esperada = base / "2026" / "10" / "21" / "Retenciones" / f"{CLAVE_RETENCION}.pdf"
+    esperada = base / "2026" / "10" / "21" / "Retenciones" / "001-010-000004219_1700000000001.pdf"
     assert ruta_destino(base, _retencion(), "pdf") == esperada
 
 
@@ -116,3 +116,48 @@ def test_decidir_marca_conflicto_si_existe_distinto(tmp_path):
 def test_decidir_marca_conflicto_si_el_destino_es_una_carpeta(tmp_path):
     (tmp_path / "a.pdf").mkdir()
     assert decidir(tmp_path / "a.pdf", b"contenido") == Accion.CONFLICTO
+
+
+# --- el nombre lleva el número del documento, pero el número solo no es único ---------------
+
+def _con_numero(ruc, estab, pto, sec, codigo="12345678"):
+    """Retención del 21/10/2026 con una clave válida armada aquí (dígito verificador calculado)."""
+    base = f"21102026{'07'}{ruc}1{estab}{pto}{sec:09d}{codigo}1"
+    return Comprobante.desde_celdas(
+        nro="1",
+        ruc_y_razon=f"{ruc} EMISOR {ruc[-3:]} S.A.",
+        tipo_y_serie=f"Comprobante de Retención {estab}-{pto}-{sec:09d}",
+        clave=base + str(digito_verificador(base)),
+        fecha_autorizacion="21/10/2026 10:00:00",
+        fecha_emision="21/10/2026",
+    )
+
+
+def test_el_nombre_empieza_con_el_numero_del_documento():
+    c = _con_numero("1790000000001", "001", "001", 6089)
+    assert nombre_archivo(c, "pdf").startswith("001-001-000006089")
+    assert nombre_archivo(c, "pdf") == "001-001-000006089_1790000000001.pdf"
+
+
+def test_mismo_numero_de_dos_emisores_no_colisiona():
+    a = _con_numero("1790000000001", "001", "001", 6089)
+    b = _con_numero("1791111111001", "001", "001", 6089)
+    assert a.clave.numero == b.clave.numero and a.clave.valor != b.clave.valor  # la premisa
+    destinos = planificar(Path("salida"), [a, b])
+    assert len({d.ruta for d in destinos}) == 4
+
+
+def test_el_nombre_no_depende_de_los_demas_comprobantes_del_lote():
+    a = _con_numero("1790000000001", "001", "001", 6089)
+    b = _con_numero("1791111111001", "001", "001", 6089)
+    solo = {d.extension: d.ruta for d in planificar(Path("s"), [a])}
+    con_otro = {d.extension: d.ruta for d in planificar(Path("s"), [b, a]) if d.comprobante is a}
+    assert solo == con_otro  # mismo nombre en cualquier corrida: no se duplican archivos
+
+
+def test_mismo_emisor_numero_y_dia_sigue_siendo_la_misma_ruta():
+    # No puede ocurrir en el SRI (el secuencial es único por emisor y tipo); si ocurre, se detecta.
+    a = _con_numero("1790000000001", "001", "001", 6089, codigo="11111111")
+    b = _con_numero("1790000000001", "001", "001", 6089, codigo="22222222")
+    with pytest.raises(ValueError, match="misma ruta"):
+        planificar(Path("salida"), [a, b])

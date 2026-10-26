@@ -8,17 +8,22 @@ Pendiente: evidencias (capturas con banner). La paginación falla cerrado (Porta
 verificarla contra el portal; ver ComprobantesPage.leer_todas.
 """
 
+import calendar
 from dataclasses import dataclass
 
 from archivist_app.browser import open_context
-from archivist_app.config import USER_WAIT_TIMEOUT_S, load_settings
+from archivist_app.config import APP_NAME, load_settings
 from archivist_app.logger import get_logger
-from archivist_app.pages.comprobantes_page import ComprobantesPage
+from archivist_app.models import TIPO_PORTAL_A_CODIGO, TIPOS
+from archivist_app.pages.comprobantes_page import ComprobantesPage, FiltroConsulta
 from archivist_app.pages.login_page import LoginPage
 from archivist_app.services.downloader import Downloader
 from archivist_app.services.notifier import notificar
 
 log = get_logger(__name__)
+
+# Texto idéntico al del proyecto hermano (Docket). Ya no menciona el límite de 10 minutos.
+AVISO_INICIAL = "Elige el tipo de comprobante y el rango de fechas, y pulsa Consultar en el portal."
 
 # Qué se le dice al usuario ante cada situación que detecta ComprobantesPage.
 _AVISOS_CAPTCHA = {
@@ -35,6 +40,29 @@ class RunResult:
     omitidos: int  # archivos que ya existían con el mismo contenido
     xml_con_clave: int
     xml_total: int
+    tipo: str  # nombre del tipo de comprobante consultado
+    desde: str  # AAAA-MM-DD
+    hasta: str  # AAAA-MM-DD
+    # Todo o nada: un fallo aborta el lote, así que en un resumen de éxito siempre es 0.
+    fallidos: int = 0
+
+
+def _rango(filtro: FiltroConsulta) -> tuple[str, str]:
+    """El portal filtra por año, mes y día (0 = 'Todos'): con 'Todos' el rango es el mes completo."""
+    if filtro.dia:
+        dia = f"{filtro.ano:04d}-{filtro.mes:02d}-{filtro.dia:02d}"
+        return dia, dia
+    ultimo = calendar.monthrange(filtro.ano, filtro.mes)[1]
+    return f"{filtro.ano:04d}-{filtro.mes:02d}-01", f"{filtro.ano:04d}-{filtro.mes:02d}-{ultimo:02d}"
+
+
+def mensaje_resumen(r: RunResult) -> str:
+    """Mismo formato que Docket; Nuevos/omitidos/fallidos cuentan archivos (XML y PDF)."""
+    palabra = "comprobante" if r.comprobantes == 1 else "comprobantes"
+    return (
+        f"{r.tipo} | {r.desde} a {r.hasta}: {r.comprobantes} {palabra}. "
+        f"Nuevos {r.escritos}, omitidos {r.omitidos}, fallidos {r.fallidos}."
+    )
 
 
 def _avisar_captcha(motivo: str) -> None:
@@ -48,20 +76,18 @@ def ejecutar() -> RunResult:
         LoginPage(page).login(
             settings.login_url, settings.recibidos_url, settings.portal_ruc, settings.portal_password
         )
-        notificar(
-            "Archivist: elija el filtro",
-            f"Elija año, mes, día y tipo, y pulse Consultar. Tiene {USER_WAIT_TIMEOUT_S // 60} minutos.",
-            "long",
-        )
+        notificar(APP_NAME, AVISO_INICIAL, "long")
         listado = ComprobantesPage(page)
         listado.esperar_listado(avisar=_avisar_captcha)
+        filtro = listado.leer_filtro()  # lo consultado, para el resumen (el navegador se cierra)
         filas = listado.leer_todas()
         log.info("Se descargarán %d comprobantes (%d archivos)", len(filas), len(filas) * 2)
         lote = Downloader(page, settings.output_dir).descargar_lote(filas)
-    resultado = RunResult(len(filas), lote.escritos, lote.omitidos, lote.xml_con_clave, lote.xml_total)
-    notificar(
-        "Archivist: descarga completa",
-        f"{resultado.comprobantes} comprobantes: {resultado.escritos} archivos nuevos y "
-        f"{resultado.omitidos} que ya estaban.",
+    desde, hasta = _rango(filtro)
+    # leer_todas ya rechazó los tipos desconocidos; el nombre sale del mapa verificado de models.
+    tipo = TIPOS.get(TIPO_PORTAL_A_CODIGO.get(filtro.tipo_portal, ""), f"Tipo {filtro.tipo_portal}")
+    resultado = RunResult(
+        len(filas), lote.escritos, lote.omitidos, lote.xml_con_clave, lote.xml_total, tipo, desde, hasta
     )
+    notificar(APP_NAME, mensaje_resumen(resultado))
     return resultado

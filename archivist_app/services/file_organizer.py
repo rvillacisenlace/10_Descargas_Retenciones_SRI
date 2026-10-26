@@ -1,7 +1,9 @@
 ﻿"""Ruta y nombre de cada archivo descargado. Lógica pura: no toca el portal ni el navegador.
 
 Reglas:
-- El archivo se llama como su clave de acceso (única y validada en models.py).
+- El archivo se llama <número>_<RUC del emisor>.<ext> (ej. 001-001-000006089_1790000000001.pdf).
+- El número solo NO es único entre emisores y no hay subcarpeta por emisor; con el RUC el nombre es
+  único y determinista. La clave de acceso sigue dentro del XML (validada en models.py).
 - La carpeta es <salida>/AAAA/MM/DD/<Tipo>/ según la fecha de emisión, sin subcarpeta por emisor.
 - Si el archivo ya existe con el mismo contenido no se duplica; si existe con otro, es un conflicto.
 """
@@ -50,7 +52,9 @@ def nombre_archivo(comprobante: Comprobante, extension: str) -> str:
     ext = (extension or "").lower().lstrip(".")
     if ext not in EXTENSIONES:
         raise ValueError(f"Extensión no admitida (se admite: {', '.join(EXTENSIONES)})")
-    return f"{comprobante.clave.valor}.{ext}"
+    # El RUC va como sufijo: dos emisores pueden usar el mismo número el mismo día y tipo, y esas
+    # rutas chocarían (el lote entero se abortaría). Determinista: no depende de otros archivos.
+    return f"{comprobante.clave.numero}_{comprobante.ruc_emisor}.{ext}"
 
 
 def carpeta_destino(base: Path, comprobante: Comprobante) -> Path:
