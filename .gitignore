@@ -9,6 +9,7 @@ Evidencias/
 .staging/
 *.pdf
 *.xml
+*.png
 
 # Build
 build/
@@ -22,6 +23,3 @@ __pycache__/
 .pytest_cache/
 .venv/
 venv/
-
-# Referencias del portal con RUC, razones sociales y claves de acceso reales
-Pasos_a_ejecutar.md

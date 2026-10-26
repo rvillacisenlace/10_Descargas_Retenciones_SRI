@@ -19,3 +19,8 @@ class PortalError(SriError):
 
 class IncompleteBatchError(SriError):
     """El lote no se pudo completar; con 'todo o nada' no se guarda nada."""
+
+
+
+class EvidenceError(SriError):
+    """No se pudo capturar o guardar la evidencia del listado."""

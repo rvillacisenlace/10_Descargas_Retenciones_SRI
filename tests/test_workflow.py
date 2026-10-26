@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from archivist_app import workflow
-from archivist_app.exceptions import IncompleteBatchError, LoginError, PortalError
+from archivist_app.exceptions import EvidenceError, IncompleteBatchError, LoginError, PortalError
 from archivist_app.pages.comprobantes_page import FiltroConsulta
 from archivist_app.services.downloader import ResultadoDescarga
 
@@ -73,6 +73,20 @@ class Escenario:
         monkeypatch.setattr(workflow, "LoginPage", Login)
         monkeypatch.setattr(workflow, "ComprobantesPage", Listado)
         monkeypatch.setattr(workflow, "Downloader", Bajador)
+        self.inicio_guardado = []
+
+        def capturar(page, usuario, desde, hasta, pagina=1, ahora=None):
+            e.append(f"capturar({usuario}, {desde}, {hasta})")
+            if falla_en == "capturar":
+                raise EvidenceError("No se pudo capturar la evidencia del listado (TimeoutError)")
+            return ["CAPTURA"]
+
+        def guardar(base, caps, inicio):
+            self.inicio_guardado.append(inicio)
+            e.append(f"guardar({base}, {caps})")
+
+        monkeypatch.setattr(workflow, "capturar", capturar)
+        monkeypatch.setattr(workflow, "guardar", guardar)
         monkeypatch.setattr(workflow, "notificar", lambda t, m, d="short": self.notificaciones.append((t, m)))
 
 
@@ -81,11 +95,12 @@ def test_orden_completo_y_resultado(monkeypatch):
     r = workflow.ejecutar()
     assert esc.eventos == [
         "config", "abrir(headless=False)", "login('u1', 'u2', 'r', 'p')", "esperar", "filtro", "leer",
+        "capturar(r, 2026-10-23, 2026-10-23)", "guardar(OUT, ['CAPTURA'])",
         "bajador(base=OUT)", "descargar(3)", "cerrar",
     ]
     assert r == workflow.RunResult(
         comprobantes=3, escritos=5, omitidos=1, xml_con_clave=3, xml_total=3,
-        tipo="Comprobante de retención", desde="2026-10-23", hasta="2026-10-23",
+        tipo="Comprobante de retención", desde="2026-10-23", hasta="2026-10-23", capturas=1,
     )
 
 
@@ -113,7 +128,8 @@ def test_el_rechazo_de_captcha_se_avisa_al_usuario(monkeypatch):
 
 
 @pytest.mark.parametrize("falla_en,error", [
-    ("login", LoginError), ("leer", PortalError), ("descargar", IncompleteBatchError),
+    ("login", LoginError), ("leer", PortalError), ("capturar", EvidenceError),
+    ("descargar", IncompleteBatchError),
 ])
 def test_un_error_se_propaga_sin_aviso_de_exito_y_cierra_el_navegador(monkeypatch, falla_en, error):
     esc = Escenario(monkeypatch, falla_en=falla_en)
@@ -167,3 +183,28 @@ def test_el_aviso_inicial_es_el_de_la_captura_de_docket():
 ])
 def test_rango_de_fechas(ano, mes, dia, esperado):
     assert workflow._rango(FiltroConsulta(ano=ano, mes=mes, dia=dia, tipo_portal="6")) == esperado
+
+
+# --- evidencia -------------------------------------------------------------------------------
+
+def test_la_evidencia_se_guarda_antes_de_descargar(monkeypatch):
+    esc = Escenario(monkeypatch)
+    workflow.ejecutar()
+    pos = {e.split("(")[0]: i for i, e in enumerate(esc.eventos)}
+    assert pos["leer"] < pos["capturar"] < pos["guardar"] < pos["descargar"]
+
+
+def test_si_falla_la_evidencia_no_se_descarga_nada(monkeypatch):
+    esc = Escenario(monkeypatch, falla_en="capturar")
+    with pytest.raises(EvidenceError):
+        workflow.ejecutar()
+    assert not any(e.startswith(("guardar", "bajador", "descargar")) for e in esc.eventos)
+
+
+def test_la_carpeta_de_evidencias_lleva_la_hora_de_inicio_de_la_corrida(monkeypatch):
+    from datetime import datetime
+    antes = datetime.now()
+    esc = Escenario(monkeypatch)
+    workflow.ejecutar()
+    assert len(esc.inicio_guardado) == 1
+    assert antes <= esc.inicio_guardado[0] <= datetime.now()

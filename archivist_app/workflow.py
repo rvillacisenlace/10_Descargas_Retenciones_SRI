@@ -4,12 +4,13 @@ Orden: config -> navegador -> login -> filtro + aviso -> espera del usuario (má
 -> recorrer páginas + evidencias -> descarga todo o nada -> notificar resumen.
 No sabe cómo se interactúa con el portal (eso es de pages/).
 
-Pendiente: evidencias (capturas con banner). La paginación falla cerrado (PortalError) hasta
-verificarla contra el portal; ver ComprobantesPage.leer_todas.
+La evidencia (captura con banner) se guarda ANTES de descargar. La paginación falla cerrado
+(PortalError) hasta verificarla contra el portal; ver ComprobantesPage.leer_todas.
 """
 
 import calendar
 from dataclasses import dataclass
+from datetime import datetime
 
 from archivist_app.browser import open_context
 from archivist_app.config import APP_NAME, load_settings
@@ -18,6 +19,7 @@ from archivist_app.models import TIPO_PORTAL_A_CODIGO, TIPOS
 from archivist_app.pages.comprobantes_page import ComprobantesPage, FiltroConsulta
 from archivist_app.pages.login_page import LoginPage
 from archivist_app.services.downloader import Downloader
+from archivist_app.services.evidence import capturar, guardar
 from archivist_app.services.notifier import notificar
 
 log = get_logger(__name__)
@@ -45,6 +47,7 @@ class RunResult:
     hasta: str  # AAAA-MM-DD
     # Todo o nada: un fallo aborta el lote, así que en un resumen de éxito siempre es 0.
     fallidos: int = 0
+    capturas: int = 0  # capturas de evidencia guardadas
 
 
 def _rango(filtro: FiltroConsulta) -> tuple[str, str]:
@@ -70,6 +73,7 @@ def _avisar_captcha(motivo: str) -> None:
 
 
 def ejecutar() -> RunResult:
+    inicio = datetime.now()  # nombre de la carpeta de evidencias de esta corrida
     settings = load_settings()
     with open_context(headless=False) as ctx:
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
@@ -81,13 +85,18 @@ def ejecutar() -> RunResult:
         listado.esperar_listado(avisar=_avisar_captcha)
         filtro = listado.leer_filtro()  # lo consultado, para el resumen (el navegador se cierra)
         filas = listado.leer_todas()
+        desde, hasta = _rango(filtro)
+        codigo = TIPO_PORTAL_A_CODIGO.get(filtro.tipo_portal, "")
+        # Evidencia del listado tal como se consultó, ANTES de descargar: si falla, no se baja nada.
+        capturas = capturar(page, settings.portal_ruc, desde, hasta)
+        guardar(settings.output_dir, capturas, inicio)
         log.info("Se descargarán %d comprobantes (%d archivos)", len(filas), len(filas) * 2)
         lote = Downloader(page, settings.output_dir).descargar_lote(filas)
-    desde, hasta = _rango(filtro)
     # leer_todas ya rechazó los tipos desconocidos; el nombre sale del mapa verificado de models.
-    tipo = TIPOS.get(TIPO_PORTAL_A_CODIGO.get(filtro.tipo_portal, ""), f"Tipo {filtro.tipo_portal}")
+    tipo = TIPOS.get(codigo, f"Tipo {filtro.tipo_portal}")
     resultado = RunResult(
-        len(filas), lote.escritos, lote.omitidos, lote.xml_con_clave, lote.xml_total, tipo, desde, hasta
+        len(filas), lote.escritos, lote.omitidos, lote.xml_con_clave, lote.xml_total, tipo, desde, hasta,
+        capturas=len(capturas),
     )
     notificar(APP_NAME, mensaje_resumen(resultado))
     return resultado

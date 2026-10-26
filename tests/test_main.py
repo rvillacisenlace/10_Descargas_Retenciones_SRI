@@ -13,7 +13,7 @@ def espiar(monkeypatch):
 
 def test_exito_devuelve_0_y_no_avisa(monkeypatch):
     avisos = espiar(monkeypatch)
-    monkeypatch.setattr(main, "ejecutar", lambda: RunResult(1, 2, 0, 1, 1))
+    monkeypatch.setattr(main, "ejecutar", lambda: RunResult(1, 2, 0, 1, 1, "Factura", "2026-10-23", "2026-10-23"))
     assert main.main() == 0 and avisos == []
 
 
