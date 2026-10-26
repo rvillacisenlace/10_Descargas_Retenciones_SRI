@@ -18,7 +18,7 @@ VARIANTES = ("v3", "invisible")
 SITEKEY_JS = """() => {
     const s = document.querySelector('script[src*="recaptcha/enterprise.js"]');
     return s ? new URL(s.src).searchParams.get('render') : null;
-}"""
+}"""    
 
 INYECTAR_JS = """(token) => {
     const area = document.getElementById('g-recaptcha-response');
@@ -52,8 +52,8 @@ if __name__ == "__main__":
         raise SystemExit("CAPTCHA_PROVIDER debe ser 2captcha para este script.")
     api_key = os.getenv("CAPTCHA_API_KEY", "").strip()
     if not api_key:
-        raise SystemExit("Falta CAPTCHA_API_KEY en el .env
-    with open_context(headless=False) as ctx:diag_descarga.py
+        raise SystemExit("Falta CAPTCHA_API_KEY en el .env")
+    with open_context(headless=False) as ctx:
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
         try:
             LoginPage(page).login(s.login_url, s.recibidos_url, s.portal_ruc, s.portal_password)

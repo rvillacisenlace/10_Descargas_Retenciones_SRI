@@ -41,7 +41,7 @@ with open_context(headless=False) as ctx:
     def t() -> str:
         return f"{time.time() - t0:6.1f}s"
 
-    def al_navegar(frame):c
+    def al_navegar(frame):
         if frame == page.main_frame:
             print(f"[{t()}] navega -> {describir(frame.url)}")
 
