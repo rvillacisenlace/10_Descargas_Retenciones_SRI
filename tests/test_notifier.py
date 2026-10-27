@@ -41,3 +41,40 @@ def test_un_aviso_que_falla_no_lanza_excepcion(monkeypatch):
 
     monkeypatch.setattr(notifier, "_mostrar", falla)
     notifier.notificar("t", "m")  # no debe propagar
+
+
+# --- icono de los avisos -----------------------------------------------------------------------------
+
+class _FakeWinotify:
+    """Sustituye al módulo winotify (solo existe en Windows) y recuerda cómo se le llamó."""
+    llamadas = []
+
+    class Notification:
+        def __init__(self, **kwargs):
+            _FakeWinotify.llamadas.append(kwargs)
+
+        def show(self):
+            _FakeWinotify.llamadas[-1]["mostrado"] = True
+
+
+def _mostrar_con_winotify_falso(monkeypatch):
+    import sys
+    _FakeWinotify.llamadas = []
+    monkeypatch.setitem(sys.modules, "winotify", _FakeWinotify)
+    notifier._mostrar("Archivist", "mensaje", "short")
+    return _FakeWinotify.llamadas[0]
+
+
+def test_el_aviso_lleva_el_icono_si_el_archivo_existe(monkeypatch, tmp_path):
+    icono = tmp_path / "archivist_256.png"
+    icono.write_bytes(b"\x89PNG")
+    monkeypatch.setattr(notifier, "ICONO_AVISOS", icono)
+    llamada = _mostrar_con_winotify_falso(monkeypatch)
+    assert llamada["icon"] == str(icono) and llamada["mostrado"]
+    assert llamada["app_id"] == "Archivist" and llamada["title"] == "Archivist"
+
+
+def test_sin_el_archivo_el_aviso_sale_sin_icono_y_sin_fallar(monkeypatch, tmp_path):
+    monkeypatch.setattr(notifier, "ICONO_AVISOS", tmp_path / "no_existe.png")
+    llamada = _mostrar_con_winotify_falso(monkeypatch)
+    assert llamada["icon"] == "" and llamada["mostrado"]

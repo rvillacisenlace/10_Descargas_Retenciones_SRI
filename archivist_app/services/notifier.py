@@ -2,7 +2,7 @@
 
 import time
 
-from archivist_app.config import APP_NAME
+from archivist_app.config import APP_NAME, ICONO_AVISOS
 from archivist_app.logger import get_logger
 
 log = get_logger(__name__)
@@ -17,7 +17,9 @@ _ultimo: float | None = None
 def _mostrar(titulo: str, mensaje: str, duracion: str) -> None:
     from winotify import Notification  # import diferido: solo funciona en Windows
 
-    Notification(app_id=APP_NAME, title=titulo, msg=mensaje, duration=duracion).show()
+    # winotify pide una ruta absoluta a la imagen; sin el archivo, el aviso sale sin icono.
+    icono = str(ICONO_AVISOS) if ICONO_AVISOS.is_file() else ""
+    Notification(app_id=APP_NAME, title=titulo, msg=mensaje, icon=icono, duration=duracion).show()
 
 
 def notificar(titulo: str, mensaje: str, duracion: str = "short") -> None:

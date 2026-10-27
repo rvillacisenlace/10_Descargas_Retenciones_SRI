@@ -76,3 +76,37 @@ def test_url_con_espacio_al_final():
     _env(PORTAL_RECIBIDOS_URL=RECIBIDOS + " ")
     with pytest.raises(ConfigError, match="PORTAL_RECIBIDOS_URL"):
         config.load_settings()
+
+
+# --- el .env según se ejecute desde el proyecto o empaquetado ------------------------------------
+
+def test_empaquetado_usa_siempre_el_env_de_appdata(tmp_path):
+    from archivist_app.config import _resolver_env
+    proyecto, appdata = tmp_path / "proyecto.env", tmp_path / "appdata.env"
+    proyecto.write_text("PORTAL_RUC=x")  # aunque exista uno dentro del paquete, no se usa
+    assert _resolver_env(True, proyecto, appdata) == appdata
+
+
+def test_en_desarrollo_usa_el_env_del_proyecto_si_existe(tmp_path):
+    from archivist_app.config import _resolver_env
+    proyecto, appdata = tmp_path / "proyecto.env", tmp_path / "appdata.env"
+    assert _resolver_env(False, proyecto, appdata) == appdata  # no existe: cae a AppData
+    proyecto.write_text("PORTAL_RUC=x")
+    assert _resolver_env(False, proyecto, appdata) == proyecto
+
+
+# --- recursos graficos (iconos) ---------------------------------------------------------------------
+
+def test_los_recursos_empaquetados_salen_de_meipass(tmp_path):
+    from archivist_app.config import _resolver_assets
+    assert _resolver_assets(str(tmp_path / "_internal"), tmp_path / "proyecto") == tmp_path / "_internal" / "assets"
+
+
+def test_en_desarrollo_los_recursos_salen_de_la_carpeta_assets_del_proyecto(tmp_path):
+    from archivist_app.config import _resolver_assets
+    assert _resolver_assets(None, tmp_path / "proyecto") == tmp_path / "proyecto" / "assets"
+
+
+def test_el_icono_de_los_avisos_es_el_png_de_256():
+    from archivist_app.config import ICONO_AVISOS
+    assert ICONO_AVISOS.name == "archivist_256.png" and ICONO_AVISOS.parent.name == "assets"
