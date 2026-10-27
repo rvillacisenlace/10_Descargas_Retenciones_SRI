@@ -1,5 +1,6 @@
 ﻿import ctypes
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,10 +25,27 @@ def _documents_dir() -> Path:
     return Path.home() / "Documents"
 
 
-# Pruebas: .env en la raíz del proyecto, junto a .env.example. Instalado: en AppData.
+def _resolver_env(empaquetado: bool, proyecto: Path, appdata: Path) -> Path:
+    """Empaquetado: SIEMPRE el de AppData, nunca un .env que viaje dentro del paquete. Desarrollo y
+    pruebas: el de la raíz del proyecto si existe."""
+    if not empaquetado and proyecto.is_file():
+        return proyecto
+    return appdata
+
+
 _PROJECT_ENV = Path(__file__).resolve().parent.parent / ".env"
 _APPDATA_ENV = Path(os.getenv("APPDATA") or Path.home() / "AppData" / "Roaming") / APP_NAME / ".env"
-ENV_FILE = _PROJECT_ENV if _PROJECT_ENV.is_file() else _APPDATA_ENV
+ENV_FILE = _resolver_env(getattr(sys, "frozen", False), _PROJECT_ENV, _APPDATA_ENV)
+
+
+def _resolver_assets(meipass: str | None, raiz: Path) -> Path:
+    """Empaquetado: los recursos viajan junto a los datos del paquete (_MEIPASS). Desarrollo:
+    <proyecto>/assets."""
+    return (Path(meipass) if meipass else raiz) / "assets"
+
+
+ASSETS_DIR = _resolver_assets(getattr(sys, "_MEIPASS", None), Path(__file__).resolve().parent.parent)
+ICONO_AVISOS = ASSETS_DIR / "archivist_256.png"  # imagen de los avisos de Windows
 OUTPUT_DIR = _documents_dir() / APP_NAME
 
 
