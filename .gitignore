@@ -17,7 +17,6 @@ Evidencias/
 build/
 dist/
 dist_installer/
-*.spec
 
 # Python
 __pycache__/
