@@ -17,6 +17,8 @@ Evidencias/
 build/
 dist/
 dist_installer/
+*.spec
+!archivist.spec
 
 # Python
 __pycache__/

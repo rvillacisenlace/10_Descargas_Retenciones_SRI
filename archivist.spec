@@ -33,7 +33,7 @@ exe = EXE(
     [],
     exclude_binaries=True,
     name="Archivist",
-    console=True,
+    console=False,
     icon=ICONO_EXE,
     upx=False,
     disable_windowed_traceback=False,
