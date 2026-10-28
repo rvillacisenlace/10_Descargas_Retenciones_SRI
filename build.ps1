@@ -1,12 +1,7 @@
 # Construye el paquete e instalador de Archivist. Desde la raiz del proyecto:  .\build.ps1
 # Si una puerta falla, se detiene y NO deja un paquete a medias.
 #
-# Clave de 2Captcha (la de la empresa): se entrega por variable de entorno, solo en esta sesion:
-#   $s = Read-Host "Clave 2Captcha" -AsSecureString
-#   $env:ARCHIVIST_CAPTCHA_API_KEY = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($s))
-#   .\build.ps1
-#   Remove-Item Env:ARCHIVIST_CAPTCHA_API_KEY
-# Instalador de prueba sin la clave:  $env:ARCHIVIST_SIN_CAPTCHA = "1"
+# La clave de 2Captcha NO se incluye en el instalador: la escribe TI en el asistente de instalacion.
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 
@@ -37,14 +32,8 @@ if (-not (Test-Path $iss) -or (Get-Item $iss).Length -lt 500) { Fallar "installe
 if (Select-String -Path $iss -Pattern "PEGUE" -Quiet) { Fallar "El .iss conserva el marcador PEGUE: falta el AppId" }
 if (Select-String -Path $iss -Pattern "2596502A-6DB7-4DEA-AEE8-2C4887455C90" -Quiet) { Fallar "El .iss usa el AppId de Docket" }
 
-$clave = $env:ARCHIVIST_CAPTCHA_API_KEY
-if ($clave) {
-    if ($clave -notmatch '^[A-Za-z0-9]{16,64}$') { Fallar "ARCHIVIST_CAPTCHA_API_KEY no tiene el formato esperado (solo letras y numeros, 16 a 64)" }
-    if (-not (Select-String -Path $iss -Pattern "CAPTCHA_API_KEY" -Quiet)) {
-        Fallar "El .iss no escribe CAPTCHA_API_KEY: el instalador saldria sin la clave"
-    }
-} elseif ($env:ARCHIVIST_SIN_CAPTCHA -ne "1") {
-    Fallar "Falta ARCHIVIST_CAPTCHA_API_KEY (o ARCHIVIST_SIN_CAPTCHA=1 para un instalador de prueba sin la clave)"
+if (-not (Select-String -Path $iss -Pattern "CAPTCHA_API_KEY" -Quiet)) {
+    Fallar "El .iss no escribe CAPTCHA_API_KEY en el .env: el programa instalado no podria resolver el captcha"
 }
 
 # 1) Entorno limpio: asi no se empaqueta por accidente nada que no sea del proyecto
@@ -112,7 +101,7 @@ $manual = @("docs\Archivist_Manual_de_Usuario.pdf", "docs\Archivist_Manual_de_Us
     ForEach-Object { Join-Path $PSScriptRoot $_ } | Where-Object { Test-Path $_ } | Select-Object -First 1
 if ($manual) { Copy-Item $manual $carpeta } else { Write-Host "AVISO: falta el manual en docs\" -ForegroundColor Yellow }
 
-# 7) Zip y huella SHA256 (para comprobar en la otra maquina que es el mismo archivo). El zip NUNCA lleva la clave de 2Captcha.
+# 7) Zip y huella SHA256 (para comprobar en la otra maquina que es el mismo archivo). El paquete no lleva ninguna clave.
 New-Item -ItemType Directory -Force (Join-Path $PSScriptRoot "dist_installer") | Out-Null
 $zip = Join-Path $PSScriptRoot "dist_installer\Archivist-$version-win64.zip"
 if (Test-Path $zip) { Remove-Item $zip }
@@ -139,12 +128,6 @@ if (-not $iscc) {
 if (-not $iscc) { Fallar "No se encontro Inno Setup (ISCC.exe). Instalalo o agrega su carpeta al PATH." }
 
 $isccArgs = @("/DAppVersion=$version")
-if ($clave) {
-    $isccArgs += "/DCaptchaKey=$clave"
-    Write-Host "Instalador CON la clave de 2Captcha incluida (no se muestra). NO LO PUBLIQUE FUERA DE LOS CANALES DE TI." -ForegroundColor Yellow
-} else {
-    Write-Host "AVISO: instalador de PRUEBA sin la clave de 2Captcha (ARCHIVIST_SIN_CAPTCHA=1). No es para repartir." -ForegroundColor Yellow
-}
 
 & $iscc @isccArgs $iss
 if ($LASTEXITCODE -ne 0) { Fallar "Inno Setup fallo" }
