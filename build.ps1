@@ -70,10 +70,11 @@ foreach ($linea in @("[OK   ] Microsoft Edge", "[OK   ] Avisos de Windows", "[OK
 $peligrosos = Get-ChildItem $carpeta -Recurse -Force | Where-Object { $_.Name -in @(".env", ".auth") }
 if ($peligrosos) { Fallar "El paquete contiene credenciales o sesion: $($peligrosos.FullName -join ', ')" }
 
-# 6) Plantilla de configuracion y guia dentro del paquete
+# 6) Plantilla de configuracion y manual de usuario dentro del paquete (el PDF si existe; si no, el .docx)
 Copy-Item (Join-Path $PSScriptRoot ".env.example") (Join-Path $carpeta ".env.example")
-$guia = Join-Path $PSScriptRoot "docs\Guia_Instalacion_y_Operacion_Archivist.docx"
-if (Test-Path $guia) { Copy-Item $guia $carpeta } else { Write-Host "AVISO: falta la guia en docs\" -ForegroundColor Yellow }
+$manual = @("docs\Archivist_Manual_de_Usuario.pdf", "docs\Archivist_Manual_de_Usuario.docx") |
+    ForEach-Object { Join-Path $PSScriptRoot $_ } | Where-Object { Test-Path $_ } | Select-Object -First 1
+if ($manual) { Copy-Item $manual $carpeta } else { Write-Host "AVISO: falta el manual en docs\" -ForegroundColor Yellow }
 
 # 7) Zip y huella SHA256 (para comprobar en la otra maquina que es el mismo archivo)
 New-Item -ItemType Directory -Force (Join-Path $PSScriptRoot "dist_installer") | Out-Null

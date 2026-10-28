@@ -40,10 +40,10 @@ def test_lote_incompleto_tambien_devuelve_1(monkeypatch):
     assert main.main([]) == 1
 
 
-def test_excepthook_avisa_sin_filtrar_el_mensaje_del_error(monkeypatch):
+def test_excepthook_lleva_el_tipo_y_el_texto_del_error_porque_no_hay_consola(monkeypatch):
     avisos = espiar(monkeypatch)
-    main._excepthook(KeyError, KeyError("dato-sensible"), None)
-    assert avisos == [("Archivist: error inesperado", "KeyError. Revise la consola.")]
+    main._excepthook(KeyError, KeyError("columna"), None)
+    assert avisos == [("Archivist: error inesperado", "KeyError: 'columna'")]
 
 
 def test_excepthook_no_avisa_ante_ctrl_c(monkeypatch):
@@ -53,7 +53,8 @@ def test_excepthook_no_avisa_ante_ctrl_c(monkeypatch):
     main._excepthook(KeyboardInterrupt, KeyboardInterrupt(), None)
     assert avisos == [] and len(llamadas) == 1
 
-# --- opciones y empaquetado ---------------------------------------------------------------------
+
+# --- opciones: --version, --verificar y --salida --------------------------------------------------
 
 def test_version_imprime_y_no_ejecuta_nada(monkeypatch, capsys):
     monkeypatch.setattr(main, "ejecutar", lambda: pytest.fail("no debe ejecutar el flujo"))
@@ -61,66 +62,50 @@ def test_version_imprime_y_no_ejecuta_nada(monkeypatch, capsys):
     assert capsys.readouterr().out.strip() == f"Archivist {main.__version__}"
 
 
-def test_verificar_delega_y_devuelve_su_codigo_sin_tocar_el_portal(monkeypatch):
+def test_salida_escribe_el_resultado_en_el_archivo_y_no_imprime(monkeypatch, tmp_path, capsys):
+    destino = tmp_path / "version.txt"
+    assert main.main(["--version", "--salida", str(destino)]) == 0
+    assert destino.read_text(encoding="utf-8").strip() == f"Archivist {main.__version__}"
+    assert capsys.readouterr().out == ""
+
+
+def test_sin_consola_el_resultado_va_a_un_cuadro_de_mensaje(monkeypatch):
+    mensajes = []
+    monkeypatch.setattr(main, "_mensaje_windows", mensajes.append)
+    monkeypatch.setattr(sys, "stdout", None)  # ejecutable --noconsole
+    assert main.main(["--version"]) == 0
+    assert mensajes == [f"Archivist {main.__version__}"]
+
+
+def test_con_salida_no_se_muestra_ningun_cuadro_aunque_no_haya_consola(monkeypatch, tmp_path):
+    monkeypatch.setattr(main, "_mensaje_windows", lambda t: pytest.fail("no debe mostrar el cuadro"))
+    monkeypatch.setattr(sys, "stdout", None)
+    destino = tmp_path / "v.txt"
+    assert main.main(["--version", "--salida", str(destino)]) == 0 and destino.exists()
+
+
+def test_verificar_delega_usa_la_misma_salida_y_devuelve_su_codigo(monkeypatch, tmp_path):
     monkeypatch.setattr(main, "ejecutar", lambda: pytest.fail("no debe ejecutar el flujo"))
-    monkeypatch.setattr(main, "ejecutar_verificacion", lambda: 1)
-    assert main.main(["--verificar"]) == 1
+    monkeypatch.setattr(main, "ejecutar_verificacion", lambda salida: (salida("[OK   ] algo"), 1)[1])
+    destino = tmp_path / "verificacion.txt"
+    assert main.main(["--verificar", "--salida", str(destino)]) == 1
+    assert destino.read_text(encoding="utf-8").strip() == "[OK   ] algo"
 
 
-class FakeStdin:
-    def __init__(self, interactiva):
-        self.interactiva = interactiva
-
-    def isatty(self):
-        return self.interactiva
+def test_salida_sin_ruta_se_ignora(monkeypatch, capsys):
+    assert main.main(["--version", "--salida"]) == 0
+    assert capsys.readouterr().out.strip() == f"Archivist {main.__version__}"
 
 
-@pytest.mark.parametrize("empaquetado,codigo,interactiva,espera", [
-    (False, 1, True, False),   # desarrollo: la terminal ya se queda abierta
-    (True, 0, True, False),    # todo bien: la ventana se cierra sola y el aviso resume el resultado
-    (True, 1, True, True),     # empaquetado, con error y con una persona delante: espera
-    (True, 1, False, False),   # sin consola interactiva (tarea programada): jamás se queda colgado
-])
-def test_pausa_solo_en_el_ejecutable_con_error_y_con_una_persona_delante(
-        monkeypatch, empaquetado, codigo, interactiva, espera):
-    pedidos = []
-    monkeypatch.setattr(sys, "frozen", empaquetado, raising=False)
-    monkeypatch.setattr(sys, "stdin", FakeStdin(interactiva))
-    monkeypatch.setattr("builtins.input", lambda prompt="": pedidos.append(prompt) or "")
-    main._pausar_si_hay_error(codigo)
-    assert bool(pedidos) is espera
+# --- registro en archivo: desactivado por política de TI -------------------------------------------
+
+def test_el_registro_en_archivo_esta_desactivado_por_defecto(monkeypatch):
+    monkeypatch.delenv("ARCHIVIST_LOG_ARCHIVO", raising=False)
+    monkeypatch.setattr(main, "activar_log_en_archivo", lambda: pytest.fail("no debe escribir a disco"))
+    assert main._activar_log() is None
 
 
-def test_sin_stdin_no_falla(monkeypatch):
-    monkeypatch.setattr(sys, "frozen", True, raising=False)
-    monkeypatch.setattr(sys, "stdin", None)
-    main._pausar_si_hay_error(1)  # no debe lanzar
-
-
-def test_si_la_consola_se_cierra_mientras_espera_no_falla(monkeypatch):
-    monkeypatch.setattr(sys, "frozen", True, raising=False)
-    monkeypatch.setattr(sys, "stdin", FakeStdin(True))
-
-    def cerrada(prompt=""):
-        raise EOFError
-
-    monkeypatch.setattr("builtins.input", cerrada)
-    main._pausar_si_hay_error(1)  # no debe lanzar
-
-
-def test_un_error_inesperado_tambien_espera_en_el_ejecutable(monkeypatch):
-    espiar(monkeypatch)
-    pausas = []
-    monkeypatch.setattr(main, "_pausar_si_hay_error", pausas.append)
-    main._excepthook(KeyError, KeyError("x"), None)
-    assert pausas == [1]
-
-
-def test_la_variable_de_entorno_desactiva_la_pausa(monkeypatch):
-    pedidos = []
-    monkeypatch.setattr(sys, "frozen", True, raising=False)
-    monkeypatch.setattr(sys, "stdin", FakeStdin(True))
-    monkeypatch.setattr("builtins.input", lambda prompt="": pedidos.append(prompt) or "")
-    monkeypatch.setenv("ARCHIVIST_SIN_PAUSA", "1")
-    main._pausar_si_hay_error(1)
-    assert pedidos == []
+def test_el_registro_en_archivo_solo_se_activa_si_se_pide(monkeypatch, tmp_path):
+    monkeypatch.setenv("ARCHIVIST_LOG_ARCHIVO", "1")
+    monkeypatch.setattr(main, "activar_log_en_archivo", lambda: tmp_path / "archivist.log")
+    assert main._activar_log() == tmp_path / "archivist.log"

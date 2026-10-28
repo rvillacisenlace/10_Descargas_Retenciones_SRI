@@ -10,6 +10,7 @@ log = get_logger(__name__)
 # HIPÓTESIS: Windows descarta o apila avisos muy seguidos, y el segundo no se ve. 3 s es un
 # valor prudente, no medido.
 SEPARACION_S = 3.0
+MAX_MENSAJE = 250  # Windows corta los avisos largos; se recorta con una elipsis
 
 _ultimo: float | None = None
 
@@ -25,6 +26,8 @@ def _mostrar(titulo: str, mensaje: str, duracion: str) -> None:
 def notificar(titulo: str, mensaje: str, duracion: str = "short") -> None:
     """Muestra un aviso. Un aviso que falla NO debe tumbar la descarga: solo se registra."""
     global _ultimo
+    if len(mensaje) > MAX_MENSAJE:
+        mensaje = mensaje[: MAX_MENSAJE - 1] + "\u2026"
     if _ultimo is not None:
         espera = SEPARACION_S - (time.monotonic() - _ultimo)
         if espera > 0:

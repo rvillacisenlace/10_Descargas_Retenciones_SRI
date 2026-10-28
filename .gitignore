@@ -8,9 +8,10 @@ output/
 Evidencias/
 .staging/
 *.pdf
+!docs/*.pdf
 *.xml
 *.png
-*.ico
+!assets/*.png
 
 # Build
 build/
@@ -23,4 +24,5 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .venv/
+.venv-build/
 venv/

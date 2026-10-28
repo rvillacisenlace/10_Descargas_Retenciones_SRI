@@ -78,3 +78,21 @@ def test_sin_el_archivo_el_aviso_sale_sin_icono_y_sin_fallar(monkeypatch, tmp_pa
     monkeypatch.setattr(notifier, "ICONO_AVISOS", tmp_path / "no_existe.png")
     llamada = _mostrar_con_winotify_falso(monkeypatch)
     assert llamada["icon"] == "" and llamada["mostrado"]
+
+
+# --- recorte de mensajes largos -------------------------------------------------------------------
+
+def test_un_mensaje_largo_se_recorta_con_elipsis(monkeypatch):
+    mostrados = []
+    monkeypatch.setattr(notifier, "_mostrar", lambda t, m, d: mostrados.append(m))
+    monkeypatch.setattr(notifier, "_ultimo", None)
+    notifier.notificar("Archivist", "x" * 600)
+    assert len(mostrados[0]) == notifier.MAX_MENSAJE and mostrados[0].endswith("\u2026")
+
+
+def test_un_mensaje_corto_no_se_toca(monkeypatch):
+    mostrados = []
+    monkeypatch.setattr(notifier, "_mostrar", lambda t, m, d: mostrados.append(m))
+    monkeypatch.setattr(notifier, "_ultimo", None)
+    notifier.notificar("Archivist", "listo")
+    assert mostrados == ["listo"]

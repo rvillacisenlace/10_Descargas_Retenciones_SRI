@@ -4,13 +4,17 @@ Contrato:
 - Ejecuta el workflow.
 - Cualquier error (controlado o no) termina en notificación de Windows (sys.excepthook).
 - Código de salida: 0 si todo salió bien, 1 si hubo error.
-- Opciones: --version (imprime la versión) y --verificar (comprueba el equipo, sin tocar el portal).
-- Empaquetado: si hubo error, la ventana espera una tecla antes de cerrarse, para poder leerlo
-  (solo con una consola interactiva; ARCHIVIST_SIN_PAUSA=1 lo desactiva, p. ej. en build.ps1).
+- Opciones: --version y --verificar (comprueba el equipo sin tocar el portal), y --salida RUTA para
+  escribir su resultado en un archivo. El ejecutable se genera sin consola (--noconsole): sin
+  --salida, su resultado se muestra en un cuadro de mensaje de Windows.
+- No se escriben registros en disco (política de TI, igual que Docket). Para diagnosticar, con
+  autorización de TI, ARCHIVIST_LOG_ARCHIVO=1 activa un registro rotativo en AppData.
 """
 
+import ctypes
 import os
 import sys
+from pathlib import Path
 
 from archivist_app import __version__
 from archivist_app.config import APP_NAME
@@ -23,38 +27,51 @@ from archivist_app.workflow import ejecutar
 log = get_logger("archivist")
 
 
-def _pausar_si_hay_error(codigo: int) -> None:
-    """Solo en el ejecutable (su ventana de consola se cierra sola) y solo si hubo error: sin esta
-    pausa, en otra máquina el mensaje desaparece antes de poder leerlo."""
-    if not getattr(sys, "frozen", False) or codigo == 0:
-        return
-    if os.getenv("ARCHIVIST_SIN_PAUSA"):
-        return
-    if not (sys.stdin and sys.stdin.isatty()):
-        return  # sin consola interactiva (tarea programada, otro programa): no hay a quién esperar
-    try:
-        input("\nPresione Enter para cerrar esta ventana...")
-    except EOFError:
-        pass
+def _mensaje_windows(texto: str) -> None:
+    """Sin consola no hay dónde imprimir: se muestra un cuadro de mensaje (MB_ICONINFORMATION)."""
+    ctypes.windll.user32.MessageBoxW(None, texto, APP_NAME, 0x40)
+
+
+def _emitir(texto: str, ruta: str | None) -> None:
+    """Resultado de --version y --verificar: a un archivo si se pidió (--salida), a la consola si
+    existe, y si no (ejecutable sin consola) a un cuadro de mensaje."""
+    if ruta:
+        Path(ruta).write_text(texto + "\n", encoding="utf-8")
+    elif sys.stdout is not None:
+        print(texto)
+    else:
+        _mensaje_windows(texto)
+
+
+def _valor(args: list[str], opcion: str) -> str | None:
+    if opcion in args:
+        i = args.index(opcion)
+        return args[i + 1] if i + 1 < len(args) else None
+    return None
+
+
+def _activar_log() -> Path | None:
+    """El registro en archivo es opcional: por política de TI no se escribe a disco por defecto."""
+    return activar_log_en_archivo() if os.getenv("ARCHIVIST_LOG_ARCHIVO") else None
 
 
 def _excepthook(tipo, valor, traza) -> None:
-    """Errores NO controlados: traza en consola y aviso genérico (sin datos del error)."""
+    """Errores NO controlados: sin consola, el texto del error viaja en el aviso para soporte."""
     if issubclass(tipo, KeyboardInterrupt):
         sys.__excepthook__(tipo, valor, traza)
         return
     log.critical("Error inesperado", exc_info=(tipo, valor, traza))
-    notificar("Archivist: error inesperado", f"{tipo.__name__}. Revise la consola.", "long")
-    _pausar_si_hay_error(1)
+    notificar("Archivist: error inesperado", f"{tipo.__name__}: {valor}", "long")
 
 
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else list(argv)
+    ruta = _valor(args, "--salida")
     if "--version" in args:
-        print(f"{APP_NAME} {__version__}")
+        _emitir(f"{APP_NAME} {__version__}", ruta)
         return 0
     if "--verificar" in args:
-        return ejecutar_verificacion()
+        return ejecutar_verificacion(lambda texto: _emitir(texto, ruta))
     try:
         resultado = ejecutar()
     except SriError as e:
@@ -68,8 +85,6 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.excepthook = _excepthook
-    ruta_log = activar_log_en_archivo()
-    log.info("%s %s | log: %s", APP_NAME, __version__, ruta_log or "(sin archivo de log)")
-    codigo = main()
-    _pausar_si_hay_error(codigo)
-    sys.exit(codigo)
+    ruta_log = _activar_log()
+    log.info("%s %s | registro en archivo: %s", APP_NAME, __version__, ruta_log or "desactivado")
+    sys.exit(main())
