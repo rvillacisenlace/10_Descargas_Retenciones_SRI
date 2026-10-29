@@ -8,6 +8,11 @@ fila y que el portal tolere este ritmo son HIPÓTESIS hasta medirlas (scripts/di
 Contrato (el de Docket): validar el contenido de cada respuesta, descargar a .staging y mover a
 destino solo si el lote completo salió bien. Sin reintentos: ante el primer fallo se aborta el
 lote y no se guarda nada, para no insistir contra el portal ni dejar un lote parcial.
+
+Retenciones (tipo 07): su archivo se llama <factura>_<retención>, y el número de la factura solo está
+en el XML (numDocSustento). Por eso en un lote de retenciones se baja PRIMERO el XML de cada fila, se
+lee la factura y recién entonces se planifican los nombres; los PDF van después. Antes de pedir nada
+se comprueba la longitud de las rutas. Cualquier duda sobre el sustento aborta el lote.
 """
 
 import base64
@@ -23,7 +28,10 @@ from typing import Protocol
 from archivist_app.exceptions import IncompleteBatchError
 from archivist_app.logger import get_logger
 from archivist_app.models import Comprobante
-from archivist_app.services.file_organizer import Accion, decidir, planificar
+from archivist_app.services.file_organizer import (
+    Accion, comprobar_rutas, decidir, es_retencion, planificar,
+)
+from archivist_app.sustento import factura_sustento
 
 log = get_logger(__name__)
 
@@ -110,18 +118,62 @@ class Downloader:
             raise ValueError(f"HTTP {r['status']}")
         return base64.b64decode(r["b64"], validate=True)
 
+    def _solicitar(self, id_enlace: str, ext: str, nro_fila: int) -> tuple[bytes, str]:
+        """Una petición al portal, con pausa, validación de contenido y etiqueta «petición k de N»."""
+        self._peticion += 1
+        if self._peticion > 1:
+            self.dormir(self.pausa_s)
+        etiqueta = f"petición {self._peticion} de {self._total} ({ext.upper()}, fila {nro_fila})"
+        try:
+            datos = self._pedir(id_enlace)
+            validar_contenido(ext, datos)
+        except ValueError as e:
+            raise IncompleteBatchError(f"{etiqueta}: {e}") from e
+        except Exception as e:  # fallo de Playwright o de red; el mensaje no lleva datos
+            raise IncompleteBatchError(f"{etiqueta}: {type(e).__name__}") from e
+        return datos, etiqueta
+
+    def _facturas_de_retenciones(self, filas, ids):
+        """Baja el XML de cada retención y lee el número de su factura sustento. Devuelve
+        (clave de acceso -> factura, (clave, 'xml') -> (bytes, etiqueta)) para no pedir el XML dos veces."""
+        facturas, previos = {}, {}
+        for f in filas:
+            c = f.comprobante
+            if not es_retencion(c):
+                continue
+            datos, etiqueta = self._solicitar(ids[(c.clave.valor, "xml")], "xml", c.nro)
+            try:
+                facturas[c.clave.valor] = factura_sustento(datos)
+            except ValueError as e:  # SustentoError: su mensaje no lleva datos del XML
+                raise IncompleteBatchError(f"{etiqueta}: {e}") from e
+            previos[(c.clave.valor, "xml")] = (datos, etiqueta)
+        return facturas, previos
+
     def descargar_lote(self, filas: Sequence[Solicitable]) -> ResultadoDescarga:
         """Baja XML y PDF de todas las filas. Si algo falla: IncompleteBatchError y nada guardado."""
         if not filas:
             return ResultadoDescarga(0, 0, 0, 0)
-        try:
-            destinos = planificar(self.base, [f.comprobante for f in filas])
-        except ValueError as e:
-            raise IncompleteBatchError(f"No se pudo planificar el lote: {e}") from e
+        comprobantes = [f.comprobante for f in filas]
         ids = {}
         for f in filas:
             ids[(f.comprobante.clave.valor, "xml")] = f.id_xml
             ids[(f.comprobante.clave.valor, "pdf")] = f.id_pdf
+        self._peticion, self._total = 0, 2 * len(filas)
+        hay_retenciones = any(es_retencion(c) for c in comprobantes)
+        previos: dict = {}
+        try:
+            if hay_retenciones:
+                comprobar_rutas(self.base, comprobantes)  # antes de pedir nada
+            else:
+                destinos = planificar(self.base, comprobantes)
+        except ValueError as e:
+            raise IncompleteBatchError(f"No se pudo planificar el lote: {e}") from e
+        if hay_retenciones:
+            facturas, previos = self._facturas_de_retenciones(filas, ids)
+            try:
+                destinos = planificar(self.base, comprobantes, facturas=facturas)
+            except ValueError as e:
+                raise IncompleteBatchError(f"No se pudo planificar el lote: {e}") from e
         raiz = self.base / CARPETA_STAGING
         try:
             raiz.mkdir(parents=True, exist_ok=True)
@@ -133,7 +185,7 @@ class Downloader:
             ) from e
         try:
             inicio = time.monotonic()
-            pendientes, omitidos, xml_con_clave, xml_total = self._bajar(destinos, ids, staging)
+            pendientes, omitidos, xml_con_clave, xml_total = self._bajar(destinos, ids, staging, previos)
             self._mover(pendientes)
         finally:
             _quitar_staging(staging, raiz)
@@ -144,27 +196,22 @@ class Downloader:
         )
         return ResultadoDescarga(len(pendientes), omitidos, xml_con_clave, xml_total)
 
-    def _bajar(self, destinos, ids, staging: Path):
+    def _bajar(self, destinos, ids, staging: Path, previos=None):
+        previos = previos or {}
         pendientes: list[tuple[Path, Path]] = []
         omitidos = xml_con_clave = xml_total = 0
-        total = len(destinos)
         for n, d in enumerate(destinos, start=1):
-            if n > 1:
-                self.dormir(self.pausa_s)
             ext = d.extension
-            etiqueta = f"petición {n} de {total} ({ext.upper()}, fila {d.comprobante.nro})"
-            try:
-                datos = self._pedir(ids[(d.comprobante.clave.valor, ext)])
-                validar_contenido(ext, datos)
-            except ValueError as e:
-                raise IncompleteBatchError(f"{etiqueta}: {e}") from e
-            except Exception as e:  # fallo de Playwright o de red; el mensaje no lleva datos
-                raise IncompleteBatchError(f"{etiqueta}: {type(e).__name__}") from e
+            clave = d.comprobante.clave.valor
+            if (clave, ext) in previos:  # el XML de una retención ya se pidió para leer su factura
+                datos, etiqueta = previos[(clave, ext)]
+            else:
+                datos, etiqueta = self._solicitar(ids[(clave, ext)], ext, d.comprobante.nro)
             if ext == "xml":
                 xml_total += 1
                 # HIPÓTESIS sin confirmar: el XML trae la clave de acceso de su fila. Hasta
                 # verlo con datos reales solo se advierte; si siempre coincide, pasa a error.
-                if d.comprobante.clave.valor.encode("ascii") in datos:
+                if clave.encode("ascii") in datos:
                     xml_con_clave += 1
                 else:
                     log.warning("%s: el XML no contiene la clave de acceso de su fila", etiqueta)
