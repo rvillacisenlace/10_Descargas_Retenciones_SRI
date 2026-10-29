@@ -16,11 +16,14 @@ from archivist_app.services.file_organizer import ruta_destino
 RUC = "1790000000001"  # RUC ficticio, solo para pruebas
 
 
-def fila_dict(i: int, sec: int) -> dict:
-    base = f"19102026{'07'}{RUC}1038005{sec:09d}014992741"  # 48 digitos
+def fila_dict(i: int, sec: int, tipo: str = "01", ruc: str = RUC) -> dict:
+    """tipo "01" (factura) por defecto: la mecánica de la descarga no depende del tipo. Las retenciones
+    ("07") se nombran con la factura de su XML y tienen sus propias pruebas al final."""
+    base = f"19102026{tipo}{ruc}1038005{sec:09d}014992741"  # 48 digitos
+    etiqueta = "Comprobante de Retención" if tipo == "07" else "Factura"
     return {
         "celdas": [
-            str(i), f"{RUC} EMISOR DE PRUEBA S.A.", f"Comprobante de Retención 038-005-{sec:09d}",
+            str(i), f"{ruc} EMISOR DE PRUEBA S.A.", f"{etiqueta} 038-005-{sec:09d}",
             base + str(digito_verificador(base)), "19/10/2026 10:29:17", "19/10/2026",
         ],
         "id_xml": f"frmPrincipal:tablaCompRecibidos:{i - 1}:lnkXml",
@@ -35,8 +38,8 @@ class Fila:
     id_pdf: str
 
 
-def fila(i: int, sec: int) -> Fila:
-    d = fila_dict(i, sec)
+def fila(i: int, sec: int, tipo: str = "01", ruc: str = RUC) -> Fila:
+    d = fila_dict(i, sec, tipo, ruc)
     return Fila(Comprobante.desde_celdas(*d["celdas"]), d["id_xml"], d["id_pdf"])
 
 
@@ -252,3 +255,153 @@ def test_si_no_se_puede_crear_la_carpeta_temporal_no_queda_staging(tmp_path, mon
     with pytest.raises(IncompleteBatchError, match="carpeta temporal"):
         bajador(FakePage(filas), tmp_path).descargar_lote(filas)
     assert not (tmp_path / ".staging").exists()
+
+
+# === retenciones: el nombre lleva la factura del XML, así que el XML se baja PRIMERO ===========
+
+def xml_ret(f: Fila, factura: str = "001001000097687", codigo: str = "01") -> bytes:
+    """XML autorizado de una retención (comprobante en CDATA) con su documento sustento."""
+    clave = f.comprobante.clave.valor
+    interno = (
+        "<comprobanteRetencion><docsSustento><docSustento>"
+        f"<codDocSustento>{codigo}</codDocSustento><numDocSustento>{factura}</numDocSustento>"
+        "</docSustento></docsSustento></comprobanteRetencion>"
+    )
+    return (
+        f"<?xml version='1.0'?><autorizacion><numeroAutorizacion>{clave}</numeroAutorizacion>"
+        f"<comprobante><![CDATA[{interno}]]></comprobante></autorizacion>"
+    ).encode()
+
+
+def con_sustento(filas, *facturas, codigo="01") -> dict:
+    """Cambios para FakePage: el XML de cada retención trae su factura sustento (15 dígitos)."""
+    return {
+        f.id_xml: {"status": 200, "datos": xml_ret(f, fac, codigo)} for f, fac in zip(filas, facturas)
+    }
+
+
+def carpeta_ret(base: Path) -> Path:
+    return base / "2026" / "10" / "19" / "Retenciones"
+
+
+def test_retenciones_se_nombran_con_la_factura_de_su_xml(tmp_path):
+    filas = [fila(1, 101, "07"), fila(2, 102, "07")]
+    page = FakePage(filas, cambios=con_sustento(filas, "001001000097687", "001001000097688"))
+    r = bajador(page, tmp_path).descargar_lote(filas)
+    assert (r.escritos, r.omitidos, r.xml_con_clave, r.xml_total) == (4, 0, 2, 2)
+    carpeta = carpeta_ret(tmp_path)
+    assert sorted(p.name for p in carpeta.iterdir()) == [
+        "001-001-000097687_038-005-000000101.pdf", "001-001-000097687_038-005-000000101.xml",
+        "001-001-000097688_038-005-000000102.pdf", "001-001-000097688_038-005-000000102.xml",
+    ]
+    assert (carpeta / "001-001-000097687_038-005-000000101.pdf").read_bytes() == pdf(filas[0])
+    assert (carpeta / "001-001-000097688_038-005-000000102.xml").read_bytes() == xml_ret(filas[1], "001001000097688")
+    assert len(archivos(tmp_path)) == 4 and sin_staging(tmp_path)
+
+
+def test_el_xml_de_cada_retencion_se_pide_una_sola_vez_y_antes_que_los_pdf(tmp_path):
+    filas = [fila(1, 101, "07"), fila(2, 102, "07")]
+    page = FakePage(filas, cambios=con_sustento(filas, "001001000097687", "001001000097688"))
+    pausas = []
+    bajador(page, tmp_path, pausas).descargar_lote(filas)
+    assert page.pedidos == [filas[0].id_xml, filas[1].id_xml, filas[0].id_pdf, filas[1].id_pdf]
+    assert pausas == [0.5] * 3  # entre las 4 peticiones, ninguna pausa antes de la primera
+
+
+def test_fallo_en_un_pdf_de_retencion_numera_las_peticiones_en_su_orden_real(tmp_path):
+    filas = [fila(1, 101, "07"), fila(2, 102, "07")]
+    cambios = con_sustento(filas, "001001000097687", "001001000097688")
+    cambios[filas[1].id_pdf] = {"status": 500, "datos": b"x"}
+    page = FakePage(filas, cambios=cambios)
+    with pytest.raises(IncompleteBatchError, match="HTTP 500") as e:
+        bajador(page, tmp_path).descargar_lote(filas)
+    assert "petición 4 de 4 (PDF, fila 2)" in str(e.value)
+    assert archivos(tmp_path) == [] and sin_staging(tmp_path)
+
+
+def test_sustento_que_no_es_factura_aborta_sin_guardar_ni_seguir_pidiendo(tmp_path):
+    filas = [fila(1, 101, "07"), fila(2, 102, "07")]
+    page = FakePage(filas, cambios=con_sustento(filas, "001001000097687", "001001000097688", codigo="04"))
+    with pytest.raises(IncompleteBatchError, match="no es una factura") as e:
+        bajador(page, tmp_path).descargar_lote(filas)
+    assert "petición 1 de 4 (XML, fila 1)" in str(e.value)
+    assert len(page.pedidos) == 1 and archivos(tmp_path) == [] and sin_staging(tmp_path)
+
+
+def test_retencion_sin_documento_sustento_aborta(tmp_path):
+    filas = [fila(1, 101, "07")]
+    with pytest.raises(IncompleteBatchError, match="no trae documento sustento"):
+        bajador(FakePage(filas), tmp_path).descargar_lote(filas)  # el XML por defecto no lo trae
+    assert archivos(tmp_path) == [] and sin_staging(tmp_path)
+
+
+def test_retencion_con_dos_sustentos_distintos_aborta(tmp_path):
+    filas = [fila(1, 101, "07")]
+    doble = (
+        b"<comprobanteRetencion><docsSustento>"
+        b"<docSustento><codDocSustento>01</codDocSustento><numDocSustento>001001000097687</numDocSustento></docSustento>"
+        b"<docSustento><codDocSustento>01</codDocSustento><numDocSustento>001001000097688</numDocSustento></docSustento>"
+        b"</docsSustento></comprobanteRetencion>"
+    )
+    page = FakePage(filas, cambios={filas[0].id_xml: {"status": 200, "datos": doble}})
+    with pytest.raises(IncompleteBatchError, match="2 documentos sustento"):
+        bajador(page, tmp_path).descargar_lote(filas)
+    assert archivos(tmp_path) == []
+
+
+def test_acepta_el_xml_sin_envoltorio_con_raiz_comprobante_retencion(tmp_path):
+    filas = [fila(1, 101, "07")]
+    clave = filas[0].comprobante.clave.valor
+    plano = (
+        f"<?xml version=\"1.0\" encoding=\"UTF-8\"?><comprobanteRetencion id=\"comprobante\" version=\"2.0.0\">"
+        f"<infoTributaria><claveAcceso>{clave}</claveAcceso></infoTributaria>"
+        "<docsSustento><docSustento><codDocSustento>01</codDocSustento>"
+        "<numDocSustento>001001000097687</numDocSustento></docSustento></docsSustento>"
+        "</comprobanteRetencion>"
+    ).encode()
+    page = FakePage(filas, cambios={filas[0].id_xml: {"status": 200, "datos": plano}})
+    r = bajador(page, tmp_path).descargar_lote(filas)
+    assert (r.escritos, r.xml_con_clave) == (2, 1)
+    assert (carpeta_ret(tmp_path) / "001-001-000097687_038-005-000000101.xml").read_bytes() == plano
+
+
+def test_la_ruta_larga_de_retenciones_se_detecta_antes_de_pedir(tmp_path):
+    filas = [fila(1, 101, "07")]
+    page = FakePage(filas, cambios=con_sustento(filas, "001001000097687"))
+    with pytest.raises(IncompleteBatchError, match="No se pudo planificar"):
+        bajador(page, tmp_path / ("x" * 200)).descargar_lote(filas)
+    assert page.pedidos == []
+
+
+def test_repetir_un_lote_de_retenciones_lo_omite_todo(tmp_path):
+    filas = [fila(1, 101, "07"), fila(2, 102, "07")]
+    cambios = con_sustento(filas, "001001000097687", "001001000097688")
+    assert bajador(FakePage(filas, cambios=cambios), tmp_path).descargar_lote(filas).escritos == 4
+    r = bajador(FakePage(filas, cambios=cambios), tmp_path).descargar_lote(filas)
+    assert (r.escritos, r.omitidos) == (0, 4)
+    assert len(archivos(tmp_path)) == 4
+
+
+def test_retenciones_con_el_mismo_numero_de_otro_emisor_conviven_si_su_factura_es_otra(tmp_path):
+    filas = [fila(1, 101, "07"), fila(2, 101, "07", ruc="1791111111001")]  # mismo número de retención
+    assert filas[0].comprobante.clave.numero == filas[1].comprobante.clave.numero
+    page = FakePage(filas, cambios=con_sustento(filas, "001001000097687", "001001000097688"))
+    r = bajador(page, tmp_path).descargar_lote(filas)
+    assert r.escritos == 4 and len(archivos(tmp_path)) == 4
+
+
+def test_retenciones_con_el_mismo_numero_y_la_misma_factura_abortan_al_planificar(tmp_path):
+    filas = [fila(1, 101, "07"), fila(2, 101, "07", ruc="1791111111001")]
+    page = FakePage(filas, cambios=con_sustento(filas, "001001000097687", "001001000097687"))
+    with pytest.raises(IncompleteBatchError, match="No se pudo planificar.*misma ruta"):
+        bajador(page, tmp_path).descargar_lote(filas)
+    assert len(page.pedidos) == 2  # solo los dos XML; no se pidió ningún PDF
+    assert archivos(tmp_path) == [] and sin_staging(tmp_path)
+
+
+def test_los_mensajes_de_retenciones_no_llevan_la_clave_ni_la_factura(tmp_path):
+    filas = [fila(1, 101, "07")]
+    page = FakePage(filas, cambios=con_sustento(filas, "001001000097687", codigo="04"))
+    with pytest.raises(IncompleteBatchError) as e:
+        bajador(page, tmp_path).descargar_lote(filas)
+    assert filas[0].comprobante.clave.valor not in str(e.value) and "097687" not in str(e.value)
